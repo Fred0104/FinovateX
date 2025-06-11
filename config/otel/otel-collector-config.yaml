@@ -1,0 +1,82 @@
+# OpenTelemetry Collector 简化配置
+receivers:
+  # OTLP接收器
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # 主机指标接收器
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+      memory:
+      disk:
+      network:
+
+processors:
+  # 批处理器
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+  # 内存限制器
+  memory_limiter:
+    limit_mib: 256
+    check_interval: 1s
+
+exporters:
+  # Prometheus导出器
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    
+  # 日志导出器
+  logging:
+    loglevel: info
+
+  # OTLP导出器（用于链路追踪）
+  otlp:
+    endpoint: http://jaeger:14250
+    tls:
+      insecure: true
+
+extensions:
+  # 健康检查
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # 性能分析
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+service:
+  extensions: [health_check, pprof]
+  
+  pipelines:
+    # 指标管道
+    metrics:
+      receivers: [hostmetrics, otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, logging]
+    
+    # 链路追踪管道
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp, logging]
+    
+    # 日志管道
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [logging]
+
+  # 遥测配置
+  telemetry:
+    logs:
+      level: "info"
+    metrics:
+      address: 0.0.0.0:8888

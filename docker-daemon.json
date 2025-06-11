@@ -1,0 +1,10 @@
+{
+  "registry-mirrors": [
+    "https://mirrors.d-zone.top"
+  ],
+  "insecure-registries": [],
+  "experimental": false,
+  "features": {
+    "buildkit": true
+  }
+}

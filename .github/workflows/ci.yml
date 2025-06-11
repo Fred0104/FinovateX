@@ -1,0 +1,219 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  GO_VERSION: '1.21'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Go代码质量检查和测试
+  go-quality:
+    name: Go Code Quality & Tests
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: true
+
+    - name: Download dependencies
+      run: |
+        if [ -f "go.mod" ]; then
+          go mod download
+        fi
+
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@v3
+      with:
+        version: latest
+        args: --timeout=5m
+
+    - name: Run Go tests
+      run: |
+        if [ -f "go.mod" ]; then
+          go test -v -race -coverprofile=coverage.out ./...
+        else
+          echo "No Go modules found, skipping tests"
+        fi
+
+    - name: Build Go applications
+      run: |
+        if [ -f "go.mod" ]; then
+          go build -v ./...
+        else
+          echo "No Go modules found, skipping build"
+        fi
+
+  # Python代码质量检查和测试
+  python-quality:
+    name: Python Code Quality & Tests
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f "requirements-dev.txt" ]; then
+          pip install -r requirements-dev.txt
+        fi
+        if [ -f "requirements.txt" ]; then
+          pip install -r requirements.txt
+        fi
+
+    - name: Run flake8 linting
+      run: |
+        if command -v flake8 &> /dev/null; then
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        else
+          echo "flake8 not installed, skipping linting"
+        fi
+
+    - name: Run black code formatting check
+      run: |
+        if command -v black &> /dev/null; then
+          black --check --diff .
+        else
+          echo "black not installed, skipping format check"
+        fi
+
+    - name: Run mypy type checking
+      run: |
+        if command -v mypy &> /dev/null; then
+          mypy src/ --ignore-missing-imports
+        else
+          echo "mypy not installed, skipping type checking"
+        fi
+
+    - name: Run Python tests
+      run: |
+        if command -v pytest &> /dev/null; then
+          pytest -v --cov=. --cov-report=xml
+        else
+          echo "pytest not installed, skipping tests"
+        fi
+
+  # Docker构建测试
+  docker-build:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Test Docker Compose build
+      run: |
+        if [ -f "docker-compose.yml" ]; then
+          docker-compose config
+          echo "Docker Compose configuration is valid"
+        else
+          echo "No docker-compose.yml found, skipping Docker build test"
+        fi
+
+    - name: Test Go service Docker build
+      run: |
+        if [ -f "Dockerfile.go" ]; then
+          docker build -f Dockerfile.go -t finovatex-go:test .
+          echo "Go service Docker build successful"
+        fi
+
+    - name: Test Python service Docker build
+      run: |
+        if [ -f "Dockerfile.python" ]; then
+          docker build -f Dockerfile.python -t finovatex-python:test .
+          echo "Python service Docker build successful"
+        fi
+
+  # Docker镜像构建和推送（仅在main分支）
+  docker-build-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [go-quality, python-quality, docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      run: |
+        echo "sha_short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+        echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+
+    - name: Build and push Go service image
+      if: success()
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.go
+        push: true
+        tags: |
+          ghcr.io/${{ github.repository }}/finovatex-go:latest
+          ghcr.io/${{ github.repository }}/finovatex-go:${{ steps.meta.outputs.sha_short }}
+          ghcr.io/${{ github.repository }}/finovatex-go:${{ steps.meta.outputs.timestamp }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push Python service image
+      if: success()
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.python
+        push: true
+        tags: |
+          ghcr.io/${{ github.repository }}/finovatex-python:latest
+          ghcr.io/${{ github.repository }}/finovatex-python:${{ steps.meta.outputs.sha_short }}
+          ghcr.io/${{ github.repository }}/finovatex-python:${{ steps.meta.outputs.timestamp }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  # 代码覆盖率报告
+  coverage-report:
+    name: Coverage Report
+    runs-on: ubuntu-latest
+    needs: [go-quality, python-quality, docker-build, docker-build-push]
+    if: always()
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Generate coverage summary
+      run: |
+        echo "## CI Pipeline Results" >> $GITHUB_STEP_SUMMARY
+        echo "- Go Quality: ${{ needs.go-quality.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Python Quality: ${{ needs.python-quality.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Docker Build: ${{ needs.docker-build.result }}" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ github.ref }}" == "refs/heads/main" && "${{ github.event_name }}" == "push" ]]; then
+          echo "- Docker Build & Push: ${{ needs.docker-build-push.result }}" >> $GITHUB_STEP_SUMMARY
+        fi

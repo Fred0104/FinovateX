@@ -1,0 +1,86 @@
+# Prometheus配置文件
+# 全局配置
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'finovatex-dev'
+    environment: 'development'
+
+# 规则文件配置
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+# 抓取配置
+scrape_configs:
+  # Prometheus自身监控
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 5s
+    metrics_path: /metrics
+
+  # Node Exporter - 系统指标
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  # Redis Exporter - Redis指标
+  - job_name: 'redis-exporter'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  # Postgres Exporter - PostgreSQL指标
+  - job_name: 'postgres-exporter'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  # NATS Server
+  - job_name: 'nats'
+    static_configs:
+      - targets: ['nats:8222']
+    scrape_interval: 10s
+    metrics_path: /varz
+
+  # OpenTelemetry Collector
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8888']
+    scrape_interval: 10s
+    metrics_path: /metrics
+
+  # Grafana监控
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # Loki监控
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+# 告警管理器配置（可选）
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           # - alertmanager:9093
+
+# 远程写入配置（可选）
+# remote_write:
+#   - url: "http://remote-storage:9201/write"
+
+# 远程读取配置（可选）
+# remote_read:
+#   - url: "http://remote-storage:9201/read"

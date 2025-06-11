@@ -1,0 +1,275 @@
+services:
+  # PostgreSQL with TimescaleDB extension
+  postgres:
+    image: timescale/timescaledb:latest-pg17
+    container_name: finovatex-postgres
+    environment:
+      POSTGRES_DB: finovatex
+      POSTGRES_USER: finovatex_user
+      POSTGRES_PASSWORD: finovatex_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - finovatex-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finovatex_user -d finovatex && psql -U finovatex_user -d finovatex -c 'SELECT 1' > /dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+    restart: unless-stopped
+
+  # Redis for caching and session storage
+  redis:
+    image: redis:7.2.4-alpine
+    container_name: finovatex-redis
+    command: redis-server --appendonly yes --requirepass finovatex_redis_password
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - finovatex-network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a finovatex_redis_password ping | grep PONG && redis-cli -a finovatex_redis_password info replication | grep role:master"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # NATS Server with JetStream enabled
+  nats:
+    image: nats:2.10-alpine
+    container_name: finovatex-nats
+    ports:
+      - "4222:4222"  # NATS client port
+      - "8222:8222"  # HTTP monitoring port
+      - "6222:6222"  # Cluster port
+    command: ["-c", "/etc/nats/jetstream.conf"]
+    volumes:
+      - ./config/nats/jetstream.conf:/etc/nats/jetstream.conf:ro
+      - nats_data:/data/jetstream
+      - nats_logs:/var/log/nats
+    environment:
+      - NATS_USER=finovatex_user
+      - NATS_PASSWORD=finovatex_nats_password
+    networks:
+      - finovatex-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8222/healthz && wget --no-verbose --tries=1 --spider http://localhost:8222/jsz"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ==========================================
+  # 监控和可观测性堆栈
+  # ==========================================
+
+  # Prometheus - 指标收集和存储
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: finovatex-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - finovatex-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+      - nats
+
+  # Grafana - 可视化仪表板
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: finovatex-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=finovatex_grafana_password
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - finovatex-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+
+  # Loki - 日志聚合
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: finovatex-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./config/loki/loki.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    networks:
+      - finovatex-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # Promtail - 日志收集代理
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: finovatex-promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./config/promtail/promtail.yml:/etc/promtail/config.yml
+      - /var/log:/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_positions:/tmp
+    networks:
+      - finovatex-network
+    restart: unless-stopped
+    depends_on:
+      - loki
+
+  # OpenTelemetry Collector - 遥测数据收集
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: finovatex-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8888:8888"   # Prometheus metrics
+      - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # Health check
+      - "14250:14250" # Jaeger gRPC
+      - "14268:14268" # Jaeger HTTP
+      - "9411:9411"   # Zipkin
+      - "55679:55679" # zpages
+    volumes:
+      - ./config/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    networks:
+      - finovatex-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+
+  # Node Exporter - 系统指标导出器
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: finovatex-node-exporter
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - finovatex-network
+    restart: unless-stopped
+
+  # Redis Exporter - Redis指标导出器
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.56.0
+    container_name: finovatex-redis-exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+      - REDIS_PASSWORD=finovatex_redis_password
+    ports:
+      - "9121:9121"
+    networks:
+      - finovatex-network
+    restart: unless-stopped
+    depends_on:
+      - redis
+
+  # Postgres Exporter - PostgreSQL指标导出器
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: finovatex-postgres-exporter
+    environment:
+      - DATA_SOURCE_NAME=postgresql://finovatex_user:finovatex_password@postgres:5432/finovatex?sslmode=disable
+    ports:
+      - "9187:9187"
+    networks:
+      - finovatex-network
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+# Named volumes for data persistence
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  nats_data:
+    driver: local
+  nats_logs:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+  promtail_positions:
+    driver: local
+
+# Custom network for service communication
+networks:
+  finovatex-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

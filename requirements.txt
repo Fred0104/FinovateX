@@ -1,0 +1,36 @@
+# FinovateX Python服务基础依赖
+
+# Web框架
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# 数据处理
+numpy>=1.24.0
+pandas>=2.0.0
+
+# 数据库
+psycopg2-binary>=2.9.0
+redis>=5.0.0
+
+# 消息队列
+nats-py>=2.6.0
+
+# 配置管理
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# 日志
+structlog>=23.0.0
+
+# HTTP客户端
+httpx>=0.25.0
+requests>=2.31.0
+
+# 工具库
+python-dotenv>=1.0.0
+PyYAML>=6.0.0
+
+# 监控和指标
+prometheus-client>=0.19.0
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
